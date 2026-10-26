@@ -11,6 +11,7 @@ import type {
 import type {
   StagedWorkerWorkspaceInventory,
   StagedWorkerWorkspaceReadEntry,
+  WorkerWorkspaceGitHistory,
 } from "./workspace-result-inventory.js";
 
 export type WorkspaceComputationHashes = {
@@ -37,6 +38,8 @@ export type WorkspaceManifestValueInputs = {
     hashes?: WorkspaceComputationHashes;
   };
   "workspace.manifest.snapshot": WorkspaceManifestValueInputs["workspace.manifest.capture"];
+  "workspace.manifest.document": WorkspaceManifestValueInputs["workspace.manifest.capture"];
+  "workspace.manifest.reference": WorkspaceManifestValueInputs["workspace.manifest.capture"];
   "workspace.manifest.file": {
     path: string;
     maxBytes: number;
@@ -87,11 +90,17 @@ export type WorkspaceStageInput<Raw = Uint8Array<ArrayBuffer>> = WorkspaceStageI
   stagingRoot: string;
   stagedResultRef: string;
   buildCacheInputs?: string[];
+  gitHistory?: WorkerWorkspaceGitHistory;
+  parentCommit?: string;
 };
 
 export type WorkspaceManifestValueOutputs = {
   "workspace.manifest.capture": WorkspaceComputationHashResult<WorkspaceManifestCapture>;
   "workspace.manifest.snapshot": WorkspaceComputationHashResult<WorkspaceManifestSnapshot>;
+  "workspace.manifest.document": WorkspaceComputationHashResult<
+    Omit<WorkspaceManifestSnapshot, "manifest">
+  >;
+  "workspace.manifest.reference": WorkspaceComputationHashResult<string>;
   "workspace.manifest.file": WorkspaceComputationHashResult<
     Awaited<ReturnType<typeof readWorkspaceFileSnapshotWithLimit>>
   >;
@@ -112,6 +121,33 @@ export type WorkspaceManifestComputationOperations = {
     output: WorkspaceManifestValueOutputs[Type];
   };
 } & {
+  "workspace.manifest.base-refresh": {
+    input: {
+      beforeRoot: string;
+      afterRoot: string;
+      baseCommit: string;
+      baseRaw: Uint8Array<ArrayBuffer>;
+      baseRef: string;
+      buildCacheInputs: string[];
+      action: "refresh_base" | "prepare_pr";
+      hashes?: WorkspaceComputationHashes;
+    };
+    output: WorkspaceComputationHashResult<{
+      rawManifest: string;
+      manifestRef: string;
+      buildCacheInputs: string[];
+    }>;
+  };
+  "workspace.manifest.equal": {
+    input: {
+      baseRaw: Uint8Array<ArrayBuffer>;
+      baseRef: string;
+      currentRaw: Uint8Array<ArrayBuffer>;
+      currentRef: string;
+      buildCacheInputs?: string[];
+    };
+    output: boolean;
+  };
   "workspace.manifest.remote-capture": {
     input: {
       argv: string[];
@@ -124,6 +160,10 @@ export type WorkspaceManifestComputationOperations = {
   "workspace.manifest.parse": {
     input: { raw: Uint8Array<ArrayBuffer>; expectedRef?: string };
     output: { manifest: WorkerWorkspaceManifest; manifestRef: string };
+  };
+  "workspace.manifest.paths": {
+    input: { raw: Uint8Array<ArrayBuffer>; expectedRef: string; buildCacheInputs: string[] };
+    output: Set<string>;
   };
   "workspace.manifest.pair": {
     input: {

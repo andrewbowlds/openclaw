@@ -22,6 +22,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createPresenceRecipientProjection } from "./presence-projection.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { makeClient as makePresenceClient } from "./server-broadcast.test-helpers.js";
+import { broadcastFor as broadcaster } from "./server-broadcast.test-support.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import { createTranscriptUpdateBroadcastHandler } from "./server-session-events.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
@@ -39,10 +40,7 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
     ...actual,
     createSubsystemLogger: (subsystem: string) => {
       const logger = actual.createSubsystemLogger(subsystem);
-      if (subsystem !== "gateway/broadcast") {
-        return logger;
-      }
-      return { ...logger, error: warnSpy };
+      return subsystem === "gateway/broadcast" ? { ...logger, error: warnSpy } : logger;
     },
   };
 });
@@ -50,6 +48,13 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
 const makeClient = (connId: string) => makePresenceClient(connId, "operator", ["operator.read"]);
 const frameSummaries = (peer: ReturnType<typeof makeClient>) =>
   sentFrames(peer).map(({ event, seq }: { event: string; seq: number }) => ({ event, seq }));
+const addPeers = (
+  connection: ReturnType<typeof createGatewayConnectionState>,
+  peers: ReturnType<typeof makeClient>[],
+) => {
+  connection.clients.clear();
+  peers.forEach(({ client }) => connection.clients.add(client));
+};
 function expectFrame(
   peer: ReturnType<typeof makeClient>,
   event: string,
@@ -67,16 +72,6 @@ const profile = (profileId: string, displayName: string | null = null, updatedAt
   avatarRevision: "1",
   hasAvatar: false,
 });
-
-function broadcaster(
-  peers: ReturnType<typeof makeClient>[],
-  options: Omit<Parameters<typeof createGatewayBroadcaster>[0], "clients"> = {},
-) {
-  return createGatewayBroadcaster({
-    clients: new GatewayClientRegistry(peers.map(({ client }) => client)),
-    ...options,
-  });
-}
 
 async function seedSession(
   sessionKey: string,
@@ -157,6 +152,9 @@ const steeringNotice = (display = false) =>
       message: expect.objectContaining({
         ...(display ? { display: true } : {}),
         content: [{ type: "text", text: "Use the smaller patch." }],
+        __openclaw: expect.objectContaining({
+          pluginSteering: expect.objectContaining({ pluginId: "reviewer", pluginName: "Reviewer" }),
+        }),
       }),
     }),
   });
@@ -182,11 +180,8 @@ describe("broadcast serialization failures", () => {
       const { connection, projection } = await createProjectedConnection(() => cfg);
       const handler = transcriptHandler(connection, projection, peers);
       for (const order of [peers, peers.toReversed()]) {
-        connection.clients.clear();
-        for (const peer of order) {
-          peer.socket.send.mockClear();
-          connection.clients.add(peer.client);
-        }
+        addPeers(connection, order);
+        peers.forEach(({ socket }) => socket.send.mockClear());
         await handler({ target: scope, messageId: "steer", messageSeq: 1, message });
         for (const peer of peers) {
           const frames = sentFrames(peer);
@@ -195,11 +190,7 @@ describe("broadcast serialization failures", () => {
             peer.client.connect.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI ? 1 : 0,
           );
           if (notices.length) {
-            expect(notices[0].payload.message).toMatchObject({
-              display: true,
-              content: [{ type: "text", text: "Use the smaller patch." }],
-              __openclaw: { pluginSteering: { pluginId: "reviewer", pluginName: "Reviewer" } },
-            });
+            expect(notices[0]).toEqual(steeringNotice(true));
           }
           expect(frames.some((frame) => frame.event === "sessions.changed")).toBe(true);
         }
@@ -239,9 +230,7 @@ describe("broadcast serialization failures", () => {
       const viewerPeer = makeControlUiPeer(viewer);
       const peers = [ownerPeer, viewerPeer];
       const { connection, projection } = await createProjectedConnection(() => cfg);
-      for (const peer of peers) {
-        connection.clients.add(peer.client);
-      }
+      addPeers(connection, peers);
       const handler = transcriptHandler(connection, projection, peers);
       const update = { target: scope, messageId: "steer", messageSeq: 1, message };
       await handler(update);
@@ -532,7 +521,6 @@ describe("presence recipient projection", () => {
           sessionKey,
           {
             sessionId: `${agentId}-${sessionKey}`,
-            updatedAt: 1,
             visibility,
             createdVia: "operator",
             createdActor: { type: "human", source: "profile", id: "creator" },
@@ -560,8 +548,7 @@ describe("presence recipient projection", () => {
         [reader, admin],
         [admin, reader],
       ]) {
-        connection.clients.clear();
-        order.forEach((peer) => connection.clients.add(peer.client));
+        addPeers(connection, order);
         connection.broadcast("presence", payload, { stateVersion });
         expect(lastFrame(reader).payload.presence).toEqual([
           { ...person, watchedSessions: [sharedKey, "agent:work:global", "agent:work:unknown"] },
@@ -623,7 +610,6 @@ describe("presence recipient projection", () => {
       const key = "agent:main:private";
       await seedSession(key, {
         sessionId: "private",
-        updatedAt: 1,
         visibility: "draft",
         createdVia: "operator",
         createdActor: { type: "human", source: "profile", id: "creator" },
