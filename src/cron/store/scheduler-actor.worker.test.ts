@@ -416,6 +416,7 @@ it.each([false, true])("recovers stale cron slots unless skipMissedJobs=%s", (sk
               runReceipt: launch.runReceipt,
               status: "ok",
               completionStatus: "succeeded",
+              errorReason: undefined,
               deliveryState: {
                 status: "not-requested",
                 failureNotification: { status: "not-requested" },
