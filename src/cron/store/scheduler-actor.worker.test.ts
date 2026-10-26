@@ -367,7 +367,7 @@ it.each([false, true])("bounds forward clock catch-up with intervening refresh=%
   expect(scheduler.receipts()).toHaveLength(5);
 });
 
-it("recovers a missed cron slot on a normal tick when the persisted next run is stale", () => {
+it.each([false, true])("recovers stale cron slots unless skipMissedJobs=%s", (skipMissedJobs) => {
   const healthy = job("stale-future", now + minute, {
     schedule: cronSchedule,
     state: {
@@ -377,10 +377,12 @@ it("recovers a missed cron slot on a normal tick when the persisted next run is 
       lastDurationMs: 1_000,
     },
   });
-  const scheduler = storedScheduler("missed-slot-tick", [healthy]);
-  expect(scheduler.start().accepted).toEqual([]);
-
-  // Two hours of one-minute slots were missed, yet nextRunAtMs still points 30 minutes out.
+  const scheduler = storedScheduler(`missed-slot-${skipMissedJobs}`, [healthy]);
+  expect(
+    scheduler.start(now, {
+      snapshot: { config: { ...snapshot.config, cronConfig: { skipMissedJobs } } },
+    }).accepted,
+  ).toEqual([]);
   scheduler.save([
     {
       ...healthy,
@@ -392,36 +394,8 @@ it("recovers a missed cron slot on a normal tick when the persisted next run is 
       },
     },
   ]);
-  expect(jobIds(scheduler.tick(now + 1_000, 1_000).accepted)).toEqual(["stale-future"]);
-});
-
-it("leaves a stale cron slot alone on a normal tick when skipMissedJobs is set", () => {
-  const skipSnapshot: CronSchedulerSnapshot = {
-    config: { ...snapshot.config, cronConfig: { skipMissedJobs: true } },
-  };
-  const healthy = job("stale-skip", now + minute, {
-    schedule: cronSchedule,
-    state: {
-      nextRunAtMs: now + minute,
-      lastRunAtMs: now,
-      lastRunStatus: "ok",
-      lastDurationMs: 1_000,
-    },
-  });
-  const scheduler = storedScheduler("missed-slot-skip", [healthy]);
-  expect(scheduler.start(now, { snapshot: skipSnapshot }).accepted).toEqual([]);
-  scheduler.save([
-    {
-      ...healthy,
-      state: {
-        nextRunAtMs: now + 30 * minute,
-        lastRunAtMs: now - 120 * minute,
-        lastRunStatus: "ok",
-        lastDurationMs: 1_000,
-      },
-    },
-  ]);
-  expect(scheduler.tick(now + 1_000, 1_000).accepted).toEqual([]);
+  const tick = scheduler.tick(now + 1_000, 1_000);
+  expect(jobIds(tick.launches)).toEqual(skipMissedJobs ? [] : ["stale-future"]);
 });
 
 it("keeps the persisted next deadline when the wall clock moves backward", () => {
