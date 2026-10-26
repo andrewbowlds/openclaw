@@ -7,6 +7,7 @@ import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.
 import { tryResolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import {
+  computeJobPreviousRunAtOrBeforeMs,
   DEFAULT_ERROR_BACKOFF_SCHEDULE_MS,
   hasActiveCronRun,
   hasScheduledNextRunAtMs,
@@ -526,6 +527,12 @@ export function runCronSchedulerInWorker(
         currentJobs().some((job) => job.state.queuedAtMs !== undefined))
     ) {
       currentJobs();
+      for (const job of owned) {
+        if (job.state.nextRunAtMs !== undefined && job.state.nextRunAtMs > nowMs) {
+          // Recovery must not consume the future occurrence's receipt identity.
+          job.state.nextRunAtMs = computeJobPreviousRunAtOrBeforeMs(job, nowMs);
+        }
+      }
       const requested = requestAndDrainCronRunsInWorker(
         database,
         {

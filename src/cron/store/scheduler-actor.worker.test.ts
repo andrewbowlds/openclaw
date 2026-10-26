@@ -15,6 +15,7 @@ import {
 import { projectCronRunHistoryPage } from "../run-history.js";
 import type { CronJob } from "../types.js";
 import { loadCronStoreFromDatabase } from "./load.kernel.js";
+import { finalizeCronRunsInWorker } from "./run-finalization.worker.js";
 import { readCronRunRecordsInDatabase } from "./run-history.kernel.js";
 import { queueJob } from "./run-queue.test-support.js";
 import { cancelCronRequestsInWorker } from "./run-queue.worker.js";
@@ -396,6 +397,40 @@ it.each([false, true])("recovers stale cron slots unless skipMissedJobs=%s", (sk
   ]);
   const tick = scheduler.tick(now + 1_000, 1_000);
   expect(jobIds(tick.launches)).toEqual(skipMissedJobs ? [] : ["stale-future"]);
+  if (skipMissedJobs) {
+    return;
+  }
+  let launch = tick.launches[0]!;
+  for (let slot = 1; slot <= 30; slot += 1) {
+    const endedAt = launch.runReceipt.startedAtMs + 100;
+    withinWorker(() =>
+      finalizeCronRunsInWorker(database, {
+        storeKey: scheduler.storeKey,
+        snapshot: {
+          nowMs: endedAt,
+          defaultAgentId: "main",
+          outcomes: [
+            {
+              jobId: launch.job.id,
+              job: launch.job,
+              runReceipt: launch.runReceipt,
+              status: "ok",
+              completionStatus: "succeeded",
+              deliveryState: {
+                status: "not-requested",
+                failureNotification: { status: "not-requested" },
+              },
+              startedAt: launch.runReceipt.startedAtMs,
+              endedAt,
+            },
+          ],
+        },
+      }),
+    );
+    const next = scheduler.tick(now + slot * minute, slot * minute);
+    expect(jobIds(next.launches), `scheduled minute ${slot}`).toEqual(["stale-future"]);
+    launch = next.launches[0]!;
+  }
 });
 
 it("keeps the persisted next deadline when the wall clock moves backward", () => {
